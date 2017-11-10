@@ -67,6 +67,7 @@ align_table(Alignment,Table) ->
 
 calculate_field_alignment(ColumnAlingment, WidthAlignment) ->
   case ColumnAlingment of
+    n -> {0,0};
     r -> {0,WidthAlignment};
     l -> {WidthAlignment,0};
     c ->
