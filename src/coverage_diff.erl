@@ -48,10 +48,10 @@ main(Args) ->
 %%====================================================================
 
 parse_arguments(["-c",CacheDir|T]) ->
-  put(cacheDir,CacheDir),
+  put(cache_dir,CacheDir),
   parse_arguments(T);
 parse_arguments([_,_]=Builds) ->
-  create_cache_directories(Builds),
+  load_cache(Builds),
   Builds;
 parse_arguments(Args) ->
   io:format("invalid arguments:~n~8c~p~n", [$ ,Args]),
@@ -62,43 +62,38 @@ parse_arguments(Args) ->
 %%%%%%%%%%%%%%%%%%%%
 %% cache functions
 %%%%%%%%%%%%%%%%%%%%
-try_cache(Fun)->
-  case get(cacheDir) of
-    undefined -> undefined;
-    CacheDir -> Fun(CacheDir)
+load_cache(Builds)->
+  [begin
+     put(BuildID,[]),
+     case get(cache_dir) of
+       undefined -> ok;
+       CacheDir ->
+         CacheFile = cache_file(CacheDir,BuildID),
+         case file:consult(CacheFile) of
+           {ok,Data} -> put(BuildID,Data);
+           _ -> ok
+         end
+     end
+   end || BuildID <- Builds].
+
+read_cache(BuildID,Key) ->
+  CacheData = get(BuildID),
+  case lists:keyfind(Key,1,CacheData) of
+    false -> undefined;
+    {Key,Value} -> Value
   end.
 
-create_cache_directories(Builds)->
-  try_cache( fun(CacheDir) ->
-               [ok = filelib:ensure_dir(cache_file(CacheDir,B,"")) || B <- Builds]
-             end).
-
-read_cache(BuildID,File) ->
-  try_cache( fun(CacheDir) ->
-               CacheFile = cache_file(CacheDir,BuildID,File),
-               case file:consult(CacheFile) of
-                 {ok,Data} -> Data;
-                 _ -> undefined
-               end
-             end).
-
-store_cache(BuildID,File,Data) ->
-  try_cache( fun(CacheDir) ->
-               CacheFile = cache_file(CacheDir,BuildID,File),
-               IOData = [io_lib:format("~n~p.", [D]) || D <- Data],
-               ok = file:write_file(CacheFile, IOData)
-             end).
-
-cache_file(CacheDir,BuildID,File) ->
-  CacheDir ++ "/" ++ BuildID ++ "/" ++
-  if
-    File =:= "file_list" orelse File =:= "" -> File;
-    true -> filename:basename(File) ++ "." ++ hashhex(File)
+store_cache(BuildID,Key,Data) ->
+  case get(cache_dir) of
+    undefined -> ok;
+    CacheDir ->
+      CacheFile = cache_file(CacheDir,BuildID),
+      IOData = io_lib:format("~n{~p, ~p}.", [Key,Data]),
+      ok = file:write_file(CacheFile, IOData, [append])
   end.
 
-hashhex(String) ->
-  lists:flatmap( fun(Byte) -> integer_to_list(Byte, 16) end,
-                 binary_to_list(crypto:hash(sha, String))).
+cache_file(CacheDir,BuildID) ->
+  CacheDir ++ "/" ++ BuildID ++ ".cache".
 
 %%%%%%%%%%%%%%%%%%%%
 %% wrappers
@@ -125,8 +120,8 @@ jsx_decode(Binary,ErrorInfo)->
 %%%%%%%%%%%%%%%%%%%%
 
 get_file_list(BuildID) ->
-  CacheFile="file_list",
-  case read_cache(BuildID,CacheFile) of
+  Key=file_list,
+  case read_cache(BuildID,Key) of
     undefined ->
       URL="https://coveralls.io/builds/" ++ BuildID ++ "/source_files.json",
       {_, _, FileListBody} = http_request(URL),
@@ -134,7 +129,7 @@ get_file_list(BuildID) ->
       FileList = [unicode:characters_to_list(proplists:get_value(<<"name">>, F))
                   || F <- jsx:decode(proplists:get_value(<<"source_files">>, PreFileList))],
       SortedFileList = lists:usort(FileList),
-      store_cache(BuildID, CacheFile, SortedFileList), SortedFileList;
+      store_cache(BuildID, Key, SortedFileList), SortedFileList;
     Cache -> Cache
   end.
 
@@ -166,8 +161,8 @@ get_coverage_for_file(BuildID, FileName) ->
       NonCovered = Relevant - Covered,
       FileMeta = #file_meta{ file_name=FileName, coverage=PercentCovered, total=Total,
                              relevant=Relevant, covered=Covered, noncovered=NonCovered},
-      store_cache(BuildID, FileName, [FileMeta,{per_line_data,PerLineData}]), FileMeta;
-    Cache -> lists:keyfind(file_meta,1,Cache)
+      store_cache(BuildID, FileName, FileMeta), FileMeta;
+    Cache -> Cache
   end.
 
 %%%%%%%%%%%%%%%%%%%%
